@@ -5,7 +5,7 @@ import psycopg2
 # PostgreSQL connection details
 DB_NAME = "pdf_data"  
 DB_USER = "postgres" # I have set this to the default user
-DB_PASSWORD = ""
+DB_PASSWORD = "123456"
 DB_HOST = "localhost"
 DB_PORT = "5432"
 
@@ -23,8 +23,8 @@ cur = conn.cursor()
 cur.execute("""
     CREATE TABLE IF NOT EXISTS pdf_documents (
         id SERIAL PRIMARY KEY,
-        filename TEXT UNIQUE NOT NULL,
-        text TEXT NOT NULL,
+        file_name TEXT UNIQUE NOT NULL,
+        extracted_text TEXT NOT NULL,
         embedding VECTOR(384)  -- Ensure dimension matches your model
     );
 """)
@@ -46,10 +46,10 @@ for json_file in os.listdir(embedding_folder):
 
         # Insert into database
         cur.execute("""
-            INSERT INTO pdf_documents (filename, text, embedding)
+            INSERT INTO pdf_documents (file_name, extracted_text, embedding)
             VALUES (%s, %s, %s)
-            ON CONFLICT (filename) DO UPDATE 
-            SET text = EXCLUDED.text, embedding = EXCLUDED.embedding;
+            ON CONFLICT (file_name) DO UPDATE 
+            SET extracted_text = EXCLUDED.extracted_text, embedding = EXCLUDED.embedding;
         """, (filename, text, embedding))
 
         print(f"✅ Stored embedding for {filename}")

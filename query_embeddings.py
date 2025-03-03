@@ -1,54 +1,67 @@
 import psycopg2
-from sentence_transformers import SentenceTransformer
+import numpy as np
+from transformers import AutoTokenizer, AutoModel
+import torch
 
-# PostgreSQL connection details
-DB_NAME = "pdf_data"  # Ensure this matches your database name
-DB_USER = "postgres"
-DB_PASSWORD = ""
-DB_HOST = "localhost"
-DB_PORT = "5432"
+# Load a pre-trained model and tokenizer (e.g., from Hugging Face)
+model_name = "sentence-transformers/all-MiniLM-L6-v2"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModel.from_pretrained(model_name)
 
-# Load the Hugging Face model (same as in `generate_embeddings.py`)
-model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+# Function to convert a query text to an embedding
+def text_to_embedding(text):
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=512)
+    with torch.no_grad():
+        outputs = model(**inputs)
+    embeddings = outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
+    return embeddings
 
-def get_embedding(text):
-    """Generate an embedding for a given query text"""
-    return model.encode(text).tolist()
-
-def search_similar_pdfs(query, top_k=5):
-    """Search for the most similar PDFs in the database"""
-    query_embedding = get_embedding(query)
-
-    # Connect to PostgreSQL
+# Function to search for the most similar PDFs using cosine similarity
+def search_similar_pdfs(query_embedding, top_n=5):
+    # Connect to your PostgreSQL database
     conn = psycopg2.connect(
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        host=DB_HOST,
-        port=DB_PORT
+        dbname="pdf_data",           # Replace with your actual database name
+        user="postgres",             # Your PostgreSQL username
+        password="123456",           # Your PostgreSQL password
+        host="localhost",            # The host where PostgreSQL is running
+        port="5432"                  # The default port for PostgreSQL
     )
     cur = conn.cursor()
 
-    # Perform similarity search using cosine distance
+    # Convert query_embedding to a vector (required by pgvector)
+    query_vector = np.array(query_embedding, dtype=np.float32)
+
+    # Execute the query to find the most similar embeddings
     cur.execute("""
-        SELECT filename, text, 1 - (embedding <=> %s) AS similarity
+        SELECT file_name, extracted_text, embedding
         FROM pdf_documents
-        ORDER BY similarity DESC
+        ORDER BY embedding <=> %s::vector
         LIMIT %s;
-    """, (query_embedding, top_k))
+    """, (query_vector.tolist(), top_n))
 
+    # Fetch results
     results = cur.fetchall()
-
     cur.close()
     conn.close()
 
     return results
 
 if __name__ == "__main__":
-    query_text = input("Enter search query: ")
-    results = search_similar_pdfs(query_text)
+    # Ask user for the query text
+    print("Enter your query text:")
+    query_text = input().strip()
 
-    print("\n🔍 Top Matching PDFs:")
-    for filename, text, similarity in results:
-        print(f"\n📄 File: {filename} (Similarity: {similarity:.4f})")
-        print(f"📌 Snippet: {text[:500]}...")  # Show first 500 chars of text
+    # Generate the embedding for the query text
+    query_embedding = text_to_embedding(query_text)
+
+    # Perform the similarity search
+    similar_pdfs = search_similar_pdfs(query_embedding)
+    
+    if similar_pdfs:
+        print("\nMost Similar PDFs:")
+        for pdf in similar_pdfs:
+            print(f"File: {pdf[0]}")
+            print(f"Extracted Text: {pdf[1]}")
+            print("-" * 40)
+    else:
+        print("No similar PDFs found.")
