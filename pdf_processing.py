@@ -39,6 +39,6 @@ def process_pdf(pdf_path):
 
 
 if __name__ == "__main__":
-    pdf_file = "pdfs/Sample1.pdf" 
+    pdf_file = "pdfs/Sample2.pdf" 
     extracted_text = process_pdf(pdf_file)
     print("Extracted Text:\n", extracted_text)
