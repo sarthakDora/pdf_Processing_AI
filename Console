@@ -38,34 +38,129 @@ class Program
                 Base64Source = BinaryData.FromStream(memoryStream)
             };
 
-            // Explicitly request PDF output format
-            content.ContentFormat = ContentFormat.Pdf;
-
-            // Process the document
-            Console.WriteLine("Analyzing document and creating searchable PDF...");
+            // Process the document for analysis
+            Console.WriteLine("Analyzing document...");
             Operation<AnalyzeResult> operation = await client.AnalyzeDocumentAsync(WaitUntil.Completed, "prebuilt-layout", content);
+            
+            // Method 1: Try getting PDF directly from operation result
             AnalyzeResult result = operation.Value;
-
-            // Save the searchable PDF using stream approach
+            
+            // For newer SDK versions:
             if (result.Content != null)
             {
-                Console.WriteLine("Saving searchable PDF...");
+                Console.WriteLine("Saving searchable PDF from analysis result...");
                 
-                // Use Stream method to handle the BinaryData
-                using (Stream contentStream = result.Content.ToStream())
-                using (FileStream outputStream = File.Create(outputFilePath))
+                // Create a stream from the PDF content
+                using (var contentStream = new MemoryStream())
                 {
-                    await contentStream.CopyToAsync(outputStream);
+                    // Different SDK versions might have different methods available
+                    try
+                    {
+                        // Try first method (newer SDKs)
+                        var bytes = result.Content.ToArray();
+                        await File.WriteAllBytesAsync(outputFilePath, bytes);
+                    }
+                    catch
+                    {
+                        try
+                        {
+                            // Try second method
+                            using (var stream = result.Content.ToStream())
+                            using (var outputStream = File.Create(outputFilePath))
+                            {
+                                await stream.CopyToAsync(outputStream);
+                            }
+                        }
+                        catch
+                        {
+                            // Try direct access (older SDKs)
+                            try
+                            {
+                                // If Content is just a string (older SDKs)
+                                if (result.Content is string contentString)
+                                {
+                                    Console.WriteLine("Results don't contain a searchable PDF. Try alternate approach.");
+                                }
+                                else
+                                {
+                                    // Last fallback - try to access ContentBytes if it exists via reflection
+                                    var contentProperty = result.GetType().GetProperty("ContentBytes");
+                                    if (contentProperty != null)
+                                    {
+                                        var contentBytes = contentProperty.GetValue(result) as byte[];
+                                        if (contentBytes != null)
+                                        {
+                                            await File.WriteAllBytesAsync(outputFilePath, contentBytes);
+                                            Console.WriteLine($"Successfully saved searchable PDF to: {outputFilePath}");
+                                        }
+                                    }
+                                    else
+                                    {
+                                        Console.WriteLine("Could not access searchable PDF content.");
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"Error accessing content: {ex.Message}");
+                            }
+                        }
+                    }
                 }
-                
-                Console.WriteLine($"Successfully saved searchable PDF to: {outputFilePath}");
             }
             else
             {
-                Console.WriteLine("No PDF content was returned from the service.");
+                Console.WriteLine("No PDF content available in the result.");
             }
 
-            // Display document analysis results
+            // Method 2: For older SDK versions, try this alternative approach
+            try
+            {
+                Console.WriteLine("Trying alternative method to get searchable PDF...");
+                // Get the model ID and result ID
+                string modelId = "prebuilt-layout";
+                string resultId = operation.Id;
+                
+                // Extract the result ID from the operation ID if needed
+                if (resultId.Contains('/'))
+                {
+                    resultId = resultId.Split('/').Last();
+                }
+                
+                // Create a direct HTTP request to get the PDF
+                using (var httpClient = new System.Net.Http.HttpClient())
+                {
+                    // Set up authentication
+                    httpClient.DefaultRequestHeaders.Add("Ocp-Apim-Subscription-Key", key);
+                    
+                    // Construct the URL for the PDF
+                    string pdfUrl = $"{endpoint}/documentintelligence/documentModels/{modelId}/analyzeResults/{resultId}/pdf?api-version=2023-07-31";
+                    
+                    // Make the request
+                    var response = await httpClient.GetAsync(pdfUrl);
+                    
+                    if (response.IsSuccessStatusCode)
+                    {
+                        // Save the PDF
+                        using (var contentStream = await response.Content.ReadAsStreamAsync())
+                        using (var fileOutput = File.Create(outputFilePath))
+                        {
+                            await contentStream.CopyToAsync(fileOutput);
+                        }
+                        Console.WriteLine($"Successfully saved searchable PDF to: {outputFilePath} using alternative method");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Failed to retrieve PDF: {response.StatusCode} - {response.ReasonPhrase}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error with alternative method: {ex.Message}");
+            }
+
+            // Display document analysis results from the original operation
             Console.WriteLine("\nDocument Analysis Results:");
             foreach (DocumentPage page in result.Pages)
             {
@@ -73,7 +168,7 @@ class Program
                     $" and {page.SelectionMarks.Count} selection mark(s).");
                 // Rest of the analysis code...
             }
-            // Rest of the result analysis code...
+            // Rest of the code to display analysis results...
         }
         catch (Exception ex)
         {
@@ -82,6 +177,7 @@ class Program
             {
                 Console.WriteLine($"Inner error: {ex.InnerException.Message}");
             }
+            Console.WriteLine($"Stack trace: {ex.StackTrace}");
         }
 
         Console.WriteLine("Press any key to exit...");
