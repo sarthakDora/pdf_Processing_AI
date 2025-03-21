@@ -1,101 +1,129 @@
 using Azure;
 using Azure.AI.DocumentIntelligence;
-using Azure.AI.DocumentIntelligence.Models;
-using Microsoft.Extensions.Configuration;
 using System;
 using System.IO;
 using System.Threading.Tasks;
 
-namespace AzureDocumentIntelligenceConsole
+class Program
 {
-    class Program
+    static async Task Main(string[] args)
     {
-        static async Task Main(string[] args)
+        // Set `<your-endpoint>` and `<your-key>` variables with the values from the Azure portal
+        string endpoint = "<your-endpoint>";
+        string key = "<your-key>";
+        AzureKeyCredential credential = new AzureKeyCredential(key);
+        DocumentIntelligenceClient client = new DocumentIntelligenceClient(new Uri(endpoint), credential);
+
+        // Local file path - replace with your actual file path
+        string filePath = @"C:\path\to\your\document.pdf";
+        string outputFilePath = Path.Combine(
+            Path.GetDirectoryName(filePath),
+            $"searchable-{Path.GetFileName(filePath)}"
+        );
+
+        Console.WriteLine($"Processing document: {filePath}");
+        Console.WriteLine($"Output will be saved to: {outputFilePath}");
+
+        try
         {
-            // Load configuration from appsettings.json
-            var configuration = new ConfigurationBuilder()
-                .SetBasePath(Directory.GetCurrentDirectory())
-                .AddJsonFile("appsettings.json", optional: false)
-                .Build();
+            // Read the file into memory
+            using var fileStream = new FileStream(filePath, FileMode.Open);
+            using var memoryStream = new MemoryStream();
+            await fileStream.CopyToAsync(memoryStream);
+            memoryStream.Position = 0;
 
-            // Set up Azure Document Intelligence client
-            var endpoint = configuration["AzureDocumentIntelligence:Endpoint"];
-            var key = configuration["AzureDocumentIntelligence:Key"];
-
-            if (string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(key))
+            // Create the content object using file data instead of URL
+            AnalyzeDocumentContent content = new AnalyzeDocumentContent()
             {
-                Console.WriteLine("Error: Azure Document Intelligence Endpoint and Key must be configured in appsettings.json");
-                return;
-            }
+                Base64Source = BinaryData.FromStream(memoryStream)
+            };
 
-            var client = new DocumentIntelligenceClient(new Uri(endpoint), new AzureKeyCredential(key));
+            // Process the document
+            Console.WriteLine("Analyzing document and creating searchable PDF...");
+            Operation<AnalyzeResult> operation = await client.AnalyzeDocumentAsync(WaitUntil.Completed, "prebuilt-layout", content);
+            AnalyzeResult result = operation.Value;
 
-            // Get input and output file paths
-            Console.WriteLine("==== Azure Document Intelligence PDF OCR Converter ====");
-            
-            string inputFilePath;
-            if (args.Length > 0 && File.Exists(args[0]))
+            // Get the searchable PDF content and save it
+            Console.WriteLine("Saving searchable PDF...");
+            await File.WriteAllBytesAsync(outputFilePath, result.Content.ToArray());
+            Console.WriteLine($"Successfully saved searchable PDF to: {outputFilePath}");
+
+            // Display document analysis results
+            Console.WriteLine("\nDocument Analysis Results:");
+            foreach (DocumentPage page in result.Pages)
             {
-                inputFilePath = args[0];
-                Console.WriteLine($"Using input file from command line: {inputFilePath}");
-            }
-            else
-            {
-                Console.Write("Enter path to PDF file: ");
-                inputFilePath = Console.ReadLine().Trim('"');
-                
-                if (!File.Exists(inputFilePath))
+                Console.WriteLine($"Document Page {page.PageNumber} has {page.Lines.Count} line(s), {page.Words.Count} word(s)," +
+                    $" and {page.SelectionMarks.Count} selection mark(s).");
+                for (int i = 0; i < page.Lines.Count; i++)
                 {
-                    Console.WriteLine($"Error: File not found: {inputFilePath}");
-                    return;
+                    DocumentLine line = page.Lines[i];
+                    Console.WriteLine($"  Line {i}:");
+                    Console.WriteLine($"    Content: '{line.Content}'");
+                    Console.Write("    Bounding polygon, with points ordered clockwise:");
+                    for (int j = 0; j < line.Polygon.Count; j += 2)
+                    {
+                        Console.Write($" ({line.Polygon[j]}, {line.Polygon[j + 1]})");
+                    }
+                    Console.WriteLine();
+                }
+                for (int i = 0; i < page.SelectionMarks.Count; i++)
+                {
+                    DocumentSelectionMark selectionMark = page.SelectionMarks[i];
+                    Console.WriteLine($"  Selection Mark {i} is {selectionMark.State}.");
+                    Console.WriteLine($"    State: {selectionMark.State}");
+                    Console.Write("    Bounding polygon, with points ordered clockwise:");
+                    for (int j = 0; j < selectionMark.Polygon.Count; j += 2)
+                    {
+                        Console.Write($" ({selectionMark.Polygon[j]}, {selectionMark.Polygon[j + 1]})");
+                    }
+                    Console.WriteLine();
                 }
             }
-
-            Console.Write("Enter output file path (or press Enter to use default): ");
-            string outputFilePath = Console.ReadLine().Trim('"');
-            
-            if (string.IsNullOrWhiteSpace(outputFilePath))
+            for (int i = 0; i < result.Paragraphs.Count; i++)
             {
-                outputFilePath = Path.Combine(
-                    Path.GetDirectoryName(inputFilePath),
-                    $"searchable-{Path.GetFileName(inputFilePath)}"
-                );
-                Console.WriteLine($"Using default output path: {outputFilePath}");
+                DocumentParagraph paragraph = result.Paragraphs[i];
+                Console.WriteLine($"Paragraph {i}:");
+                Console.WriteLine($"  Content: {paragraph.Content}");
+                if (paragraph.Role != null)
+                {
+                    Console.WriteLine($"  Role: {paragraph.Role}");
+                }
             }
-
-            try
+            foreach (DocumentStyle style in result.Styles)
             {
-                Console.WriteLine("Processing document... This may take a moment.");
-                
-                // Read the file
-                using var stream = new FileStream(inputFilePath, FileMode.Open);
-                using var memoryStream = new MemoryStream();
-                await stream.CopyToAsync(memoryStream);
-                memoryStream.Position = 0;
-
-                // Call Azure Document Intelligence to process the document
-                var operation = await client.AnalyzeDocumentAsync(
-                    WaitUntil.Completed,
-                    "prebuilt-layout",
-                    BinaryData.FromStream(memoryStream));
-
-                var result = operation.Value;
-
-                // Get the searchable PDF content
-                var pdfContent = result.Content;
-
-                // Save the searchable PDF
-                await File.WriteAllBytesAsync(outputFilePath, pdfContent.ToArray());
-
-                Console.WriteLine($"Success! Searchable PDF saved to: {outputFilePath}");
+                // Check the style and style confidence to see if text is handwritten.
+                // Note that value '0.8' is used as an example.
+                bool isHandwritten = style.IsHandwritten.HasValue && style.IsHandwritten == true;
+                if (isHandwritten && style.Confidence > 0.8)
+                {
+                    Console.WriteLine($"Handwritten content found:");
+                    foreach (DocumentSpan span in style.Spans)
+                    {
+                        var handwrittenContent = result.Content.Substring(span.Offset, span.Length);
+                        Console.WriteLine($"  {handwrittenContent}");
+                    }
+                }
             }
-            catch (Exception ex)
+            for (int i = 0; i < result.Tables.Count; i++)
             {
-                Console.WriteLine($"Error processing document: {ex.Message}");
+                DocumentTable table = result.Tables[i];
+                Console.WriteLine($"Table {i} has {table.RowCount} rows and {table.ColumnCount} columns.");
+                foreach (DocumentTableCell cell in table.Cells)
+                {
+                    Console.WriteLine($"  Cell ({cell.RowIndex}, {cell.ColumnIndex}) is a '{cell.Kind}' with content: {cell.Content}");
+                }
             }
-
-            Console.WriteLine("Press any key to exit...");
-            Console.ReadKey();
         }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error: {ex.Message}");
+            if (ex.InnerException != null)
+            {
+                Console.WriteLine($"Inner error: {ex.InnerException.Message}");
+            }
+        }
+
+        Console.WriteLine("Press any key to exit...");
+        Console.ReadKey();
     }
 }
