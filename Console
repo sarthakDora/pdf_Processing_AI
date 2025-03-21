@@ -1,0 +1,101 @@
+using Azure;
+using Azure.AI.DocumentIntelligence;
+using Azure.AI.DocumentIntelligence.Models;
+using Microsoft.Extensions.Configuration;
+using System;
+using System.IO;
+using System.Threading.Tasks;
+
+namespace AzureDocumentIntelligenceConsole
+{
+    class Program
+    {
+        static async Task Main(string[] args)
+        {
+            // Load configuration from appsettings.json
+            var configuration = new ConfigurationBuilder()
+                .SetBasePath(Directory.GetCurrentDirectory())
+                .AddJsonFile("appsettings.json", optional: false)
+                .Build();
+
+            // Set up Azure Document Intelligence client
+            var endpoint = configuration["AzureDocumentIntelligence:Endpoint"];
+            var key = configuration["AzureDocumentIntelligence:Key"];
+
+            if (string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(key))
+            {
+                Console.WriteLine("Error: Azure Document Intelligence Endpoint and Key must be configured in appsettings.json");
+                return;
+            }
+
+            var client = new DocumentIntelligenceClient(new Uri(endpoint), new AzureKeyCredential(key));
+
+            // Get input and output file paths
+            Console.WriteLine("==== Azure Document Intelligence PDF OCR Converter ====");
+            
+            string inputFilePath;
+            if (args.Length > 0 && File.Exists(args[0]))
+            {
+                inputFilePath = args[0];
+                Console.WriteLine($"Using input file from command line: {inputFilePath}");
+            }
+            else
+            {
+                Console.Write("Enter path to PDF file: ");
+                inputFilePath = Console.ReadLine().Trim('"');
+                
+                if (!File.Exists(inputFilePath))
+                {
+                    Console.WriteLine($"Error: File not found: {inputFilePath}");
+                    return;
+                }
+            }
+
+            Console.Write("Enter output file path (or press Enter to use default): ");
+            string outputFilePath = Console.ReadLine().Trim('"');
+            
+            if (string.IsNullOrWhiteSpace(outputFilePath))
+            {
+                outputFilePath = Path.Combine(
+                    Path.GetDirectoryName(inputFilePath),
+                    $"searchable-{Path.GetFileName(inputFilePath)}"
+                );
+                Console.WriteLine($"Using default output path: {outputFilePath}");
+            }
+
+            try
+            {
+                Console.WriteLine("Processing document... This may take a moment.");
+                
+                // Read the file
+                using var stream = new FileStream(inputFilePath, FileMode.Open);
+                using var memoryStream = new MemoryStream();
+                await stream.CopyToAsync(memoryStream);
+                memoryStream.Position = 0;
+
+                // Call Azure Document Intelligence to process the document
+                var operation = await client.AnalyzeDocumentAsync(
+                    WaitUntil.Completed,
+                    "prebuilt-layout",
+                    BinaryData.FromStream(memoryStream));
+
+                var result = operation.Value;
+
+                // Get the searchable PDF content
+                var pdfContent = result.Content;
+
+                // Save the searchable PDF
+                await File.WriteAllBytesAsync(outputFilePath, pdfContent.ToArray());
+
+                Console.WriteLine($"Success! Searchable PDF saved to: {outputFilePath}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error processing document: {ex.Message}");
+            }
+
+            Console.WriteLine("Press any key to exit...");
+            Console.ReadKey();
+        }
+    }
+}
