@@ -1,0 +1,97 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Configuration;
+using Azure;
+using Azure.AI.DocumentIntelligence;
+using Azure.AI.DocumentIntelligence.Models;
+using System;
+using System.IO;
+using System.Threading.Tasks;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+// Configure Azure Document Intelligence service
+builder.Services.AddSingleton(serviceProvider =>
+{
+    var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+    var endpoint = configuration["AzureDocumentIntelligence:Endpoint"];
+    var key = configuration["AzureDocumentIntelligence:Key"];
+    
+    if (string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(key))
+    {
+        throw new InvalidOperationException("Azure Document Intelligence Endpoint and Key must be configured.");
+    }
+    
+    return new DocumentIntelligenceClient(new Uri(endpoint), new AzureKeyCredential(key));
+});
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+app.UseHttpsRedirection();
+
+// Define API endpoint to convert PDF to searchable PDF
+app.MapPost("/api/convert-to-searchable-pdf", async (HttpRequest request, DocumentIntelligenceClient documentClient) =>
+{
+    if (!request.HasFormContentType)
+    {
+        return Results.BadRequest("Request must be multipart/form-data.");
+    }
+
+    var form = await request.ReadFormAsync();
+    var file = form.Files["file"];
+
+    if (file == null)
+    {
+        return Results.BadRequest("No file uploaded.");
+    }
+
+    if (!file.FileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.BadRequest("Only PDF files are supported.");
+    }
+
+    try
+    {
+        using var stream = file.OpenReadStream();
+        using var memoryStream = new MemoryStream();
+        await stream.CopyToAsync(memoryStream);
+        memoryStream.Position = 0;
+
+        // Call Azure Document Intelligence to analyze the document
+        var operation = await documentClient.AnalyzeDocumentAsync(
+            WaitUntil.Completed,
+            "prebuilt-layout",
+            BinaryData.FromStream(memoryStream));
+
+        var result = operation.Value;
+
+        // Generate the searchable PDF content
+        var pdfResults = result.Content;
+        
+        // Return the searchable PDF
+        return Results.File(
+            fileContents: pdfResults,
+            contentType: "application/pdf",
+            fileDownloadName: $"searchable-{file.FileName}"
+        );
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem($"Error processing document: {ex.Message}");
+    }
+});
+
+app.Run();
