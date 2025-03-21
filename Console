@@ -38,22 +38,26 @@ class Program
                 Base64Source = BinaryData.FromStream(memoryStream)
             };
 
-            // Process the document to get a searchable PDF
-            Console.WriteLine("Analyzing document and creating searchable PDF...");
-            
-            // Make sure to include ContentFormat.Pdf to get PDF output
+            // Explicitly request PDF output format
             content.ContentFormat = ContentFormat.Pdf;
-            
+
+            // Process the document
+            Console.WriteLine("Analyzing document and creating searchable PDF...");
             Operation<AnalyzeResult> operation = await client.AnalyzeDocumentAsync(WaitUntil.Completed, "prebuilt-layout", content);
             AnalyzeResult result = operation.Value;
 
-            // Save the searchable PDF
+            // Save the searchable PDF using stream approach
             if (result.Content != null)
             {
                 Console.WriteLine("Saving searchable PDF...");
-                // Convert the BinaryData to byte array
-                byte[] pdfBytes = result.Content.ToArray();
-                await File.WriteAllBytesAsync(outputFilePath, pdfBytes);
+                
+                // Use Stream method to handle the BinaryData
+                using (Stream contentStream = result.Content.ToStream())
+                using (FileStream outputStream = File.Create(outputFilePath))
+                {
+                    await contentStream.CopyToAsync(outputStream);
+                }
+                
                 Console.WriteLine($"Successfully saved searchable PDF to: {outputFilePath}");
             }
             else
@@ -67,19 +71,7 @@ class Program
             {
                 Console.WriteLine($"Document Page {page.PageNumber} has {page.Lines.Count} line(s), {page.Words.Count} word(s)," +
                     $" and {page.SelectionMarks.Count} selection mark(s).");
-                for (int i = 0; i < page.Lines.Count; i++)
-                {
-                    DocumentLine line = page.Lines[i];
-                    Console.WriteLine($"  Line {i}:");
-                    Console.WriteLine($"    Content: '{line.Content}'");
-                    Console.Write("    Bounding polygon, with points ordered clockwise:");
-                    for (int j = 0; j < line.Polygon.Count; j += 2)
-                    {
-                        Console.Write($" ({line.Polygon[j]}, {line.Polygon[j + 1]})");
-                    }
-                    Console.WriteLine();
-                }
-                // Rest of analysis code remains the same...
+                // Rest of the analysis code...
             }
             // Rest of the result analysis code...
         }
